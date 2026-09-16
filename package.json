@@ -1,27 +1,35 @@
 {
-  "name": "dao-governance",
+  "name": "dao-governance-treasury",
   "version": "1.0.0",
-  "description": "A fully functional DAO with on-chain governance and treasury management",
+  "private": true,
+  "description": "OpenZeppelin Governor + TimelockController DAO with an upgradeable ETH treasury",
   "scripts": {
     "compile": "hardhat compile",
     "test": "hardhat test",
-    "deploy": "hardhat run scripts/deploy.ts --network localhost",
+    "test:assignment": "hardhat test test/DAOAssignment.test.ts",
     "node": "hardhat node",
-    "upgrade": "hardhat run scripts/upgrade-treasury.ts --network localhost"
+    "deploy": "hardhat run scripts/deploy.ts --network localhost",
+    "upgrade": "hardhat run scripts/upgrade-treasury.ts --network localhost",
+    "clean": "hardhat clean"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^4.0.0",
     "@nomicfoundation/hardhat-ethers": "^3.0.0",
-    "@openzeppelin/hardhat-upgrades": "^3.0.0",
-    "hardhat": "^2.19.0",
-    "typescript": "^5.3.0",
-    "ts-node": "^10.9.0",
-    "@types/chai": "^4.3.0",
-    "@types/mocha": "^10.0.0"
+    "@openzeppelin/hardhat-upgrades": "^4.1.0",
+    "@types/chai": "^4.3.20",
+    "@types/mocha": "^10.0.10",
+    "chai": "^4.4.1",
+    "dotenv": "^16.6.1",
+    "ethers": "^6.10.0",
+    "hardhat": "^2.28.6",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
   },
   "dependencies": {
-    "@openzeppelin/contracts": "^5.0.0",
-    "@openzeppelin/contracts-upgradeable": "^5.0.0",
-    "dotenv": "^16.3.0"
+    "@openzeppelin/contracts": "^5.6.1",
+    "@openzeppelin/contracts-upgradeable": "^5.6.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
