@@ -6,10 +6,9 @@
   "scripts": {
     "compile": "hardhat compile",
     "test": "hardhat test",
-    "test:assignment": "hardhat test test/DAOAssignment.test.ts",
+    "test:assignment": "hardhat test test/governance.test.ts",
     "node": "hardhat node",
     "deploy": "hardhat run scripts/deploy.ts --network localhost",
-    "upgrade": "hardhat run scripts/upgrade-treasury.ts --network localhost",
     "clean": "hardhat clean"
   },
   "devDependencies": {
