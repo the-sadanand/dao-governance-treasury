@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DAO Governance Treasury</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="container">
+    <header>
+      <div>
+        <p class="eyebrow">ON-CHAIN GOVERNANCE</p>
+        <h1>DAO Governance Treasury</h1>
+        <p class="muted">Governor + ERC20Votes + Timelock + UUPS Treasury</p>
+      </div>
+      <button id="connect">Connect Wallet</button>
+    </header>
+
+    <section class="grid">
+      <article class="card"><span>Network</span><strong id="network">Not connected</strong></article>
+      <article class="card"><span>TGT balance</span><strong id="balance">—</strong></article>
+      <article class="card"><span>Voting power</span><strong id="votes">—</strong></article>
+      <article class="card"><span>Treasury ETH</span><strong id="treasury">—</strong></article>
+    </section>
+
+    <section class="card">
+      <h2>Contract addresses</h2>
+      <div class="addresses">
+        <label>GovernanceToken<input id="token" readonly /></label>
+        <label>MyGovernor<input id="governor" readonly /></label>
+        <label>Timelock<input id="timelock" readonly /></label>
+        <label>Treasury Proxy<input id="treasuryAddress" readonly /></label>
+      </div>
+      <p id="status" class="status">Configure addresses in frontend/app.js, then connect a wallet.</p>
+    </section>
+
+    <section class="card">
+      <h2>Create ETH transfer proposal</h2>
+      <div class="form-grid">
+        <label>Recipient<input id="recipient" placeholder="0x..." /></label>
+        <label>Amount (ETH)<input id="amount" placeholder="0.1" /></label>
+      </div>
+      <button id="propose" disabled>Propose Treasury Transfer</button>
+      <p class="muted small">A successful proposal must pass voting, be queued, wait for the timelock delay, and then be executed.</p>
+    </section>
+
+    <footer>Use a dedicated testnet wallet. Never expose a private key in this frontend.</footer>
+  </main>
+  <script src="https://cdn.jsdelivr.net/npm/ethers@6.15.0/dist/ethers.umd.min.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
