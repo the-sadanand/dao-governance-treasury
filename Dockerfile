@@ -1,14 +1,12 @@
-FROM node:18
+FROM node:20-bookworm-slim
 
 WORKDIR /app
 
 COPY package*.json ./
-
 RUN npm install
 
 COPY . .
-
-RUN npx hardhat compile
+RUN npm run compile
 
 EXPOSE 8545
 
