@@ -1,6 +1,6 @@
 # DAO Governance Treasury
 
-A focused implementation of an on-chain DAO governance system using OpenZeppelin Governor, ERC20Votes, TimelockController, and a UUPS upgradeable ETH Treasury.
+A complete on-chain DAO governance system using OpenZeppelin Governor, ERC20Votes, TimelockController, and a UUPS upgradeable ETH Treasury.
 
 ## Architecture
 
@@ -15,49 +15,40 @@ GovernanceToken (ERC20Votes)
           |
           v
  Treasury Proxy (UUPS)
-          |
-          v
-     Treasury V1
-          |
-   governance-approved
-          v
-     Treasury V2
+      |         |
+      v         v
+ Treasury V1  Treasury V2
 ```
 
-`GovernorTimelockControl` routes successful proposals through the `TimelockController`; the timelock therefore owns the Treasury and is the account allowed to execute Treasury operations.
+The Timelock owns the Treasury. Successful governance proposals are queued and cannot execute until the one-hour minimum delay has elapsed.
 
 ## Assignment requirements covered
 
 - ERC20Votes governance token with delegation.
-- OpenZeppelin Governor.
-- GovernorCountingSimple for For / Against / Abstain votes.
+- OpenZeppelin Governor with simple For / Against / Abstain counting.
 - GovernorVotes and GovernorVotesQuorumFraction.
-- OpenZeppelin TimelockController with a 1-hour minimum delay.
-- Governor receives `PROPOSER_ROLE` and `CANCELLER_ROLE`.
+- TimelockController with a 1-hour minimum delay.
+- Governor receives PROPOSER_ROLE and CANCELLER_ROLE.
 - Executor role is open so any account can execute a ready proposal.
 - Deployer renounces Timelock admin privileges after setup.
 - UUPS upgradeable Treasury owned by the Timelock.
-- Governance proposal can transfer ETH from the Treasury.
-- Governance proposal can upgrade Treasury V1 to V2.
-- Upgrade test verifies the proxy address, owner, and ETH balance are preserved and `version() == 2`.
+- Governance-controlled ETH transfer.
+- Governance-controlled Treasury V1 to V2 upgrade.
+- Upgrade test verifies proxy address, owner, ETH balance, and version 2.
 - Direct EOA Treasury transfer and upgrade attempts are rejected.
-- Docker and GitHub Actions CI included.
+- Edge-case tests for early execution, insufficient funds, no votes, Against/Abstain votes, and unauthorized Timelock scheduling.
+- Sepolia deployment configuration and deployment script.
+- Browser frontend with wallet connection and Treasury proposal creation.
+- Docker and GitHub Actions CI.
 
 ## Proposal lifecycle
 
 ```text
-propose
-   |
-   v
-Pending -> Active -> Succeeded
-                      |
-                      v
-                    Queued
-                      |
-                 1 hour delay
-                      |
-                      v
-                   Executed
+propose -> Pending -> Active -> Succeeded -> Queued
+                                              |
+                                         1 hour delay
+                                              |
+                                           Executed
 ```
 
 ## Project structure
@@ -70,8 +61,13 @@ contracts/
   TreasuryV2.sol
 scripts/
   deploy.ts
+  deploy-sepolia.ts
 test/
   governance.test.ts
+frontend/
+  index.html
+  app.js
+  styles.css
 hardhat.config.ts
 Dockerfile
 docker-compose.yml
@@ -88,52 +84,79 @@ npm run compile
 npm test
 ```
 
-The assignment-focused suite can be run directly with:
+Assignment suite:
 
 ```bash
 npm run test:assignment
 ```
 
+The current suite covers both the required happy paths and important failure cases.
+
 ## Local deployment
 
-Start a local chain:
+Terminal 1:
 
 ```bash
 npm run node
 ```
 
-In another terminal:
+Terminal 2:
 
 ```bash
 npm run deploy
 ```
 
-The deployment script prints the GovernanceToken, Governor, TimelockController, Treasury proxy, owner, and Treasury balance.
+The deployment script prints all contract addresses and the Treasury owner/balance.
 
-## Docker
+## Sepolia testnet deployment
 
-```bash
-docker compose build
-docker compose up
+Create `.env` from `.env.example` and set a Sepolia RPC URL plus a dedicated testnet deployer private key. Never commit a real private key.
+
+Optional Treasury funding amount:
+
+```text
+TREASURY_FUNDING_ETH=0.1
 ```
 
-The container starts a local Hardhat JSON-RPC node on port `8545`.
+Deploy:
 
-## Important design decisions
+```bash
+npx hardhat run scripts/deploy-sepolia.ts --network sepolia
+```
 
-### Governance token
+The script is deliberately configured so Treasury funding defaults to zero. This avoids unexpectedly spending testnet ETH during deployment.
 
-The token uses OpenZeppelin `ERC20Votes`, so voting power is based on historical checkpoints. Holders must delegate their voting power before it can be used for governance votes.
+## Frontend
 
-### Timelock
+The `frontend/` directory is a lightweight browser UI using ethers.js from a CDN. It can connect to MetaMask, show TGT balance, voting power and Treasury balance, and create an ETH transfer proposal.
 
-The TimelockController is the owner of the Treasury. Successful proposals are queued and can only execute after the minimum delay.
+After deploying to Sepolia, copy the printed addresses into the `CONFIG` object in `frontend/app.js`. Serve the folder with any static web server.
 
-### Treasury upgrade
+The frontend never contains a private key; wallet transactions are signed by the user's wallet.
 
-Treasury uses the UUPS pattern and restricts `_authorizeUpgrade` with `onlyOwner`. Since the Timelock owns the proxy, the upgrade must itself be approved by governance and executed through the timelock.
+## Security and production-oriented design
 
-The OpenZeppelin Upgrades plugin is used for safe local proxy deployment.
+- Treasury uses UUPS with an initializer and implementation locking.
+- `_authorizeUpgrade` is restricted to the Treasury owner, which is the Timelock rather than an EOA.
+- Timelock admin privileges are renounced after role setup.
+- Successful Treasury actions must pass governance and the timelock delay.
+- Open executor allows permissionless execution after a proposal becomes ready.
+- Solidity optimizer is enabled for deployed bytecode.
+- OpenZeppelin Upgrades validation is used for the UUPS proxy deployment.
+- Tests cover unauthorized direct access and important execution failure paths.
+- Secrets are supplied through environment variables rather than committed files.
+
+## CI
+
+GitHub Actions runs:
+
+```bash
+npm install
+npm run compile
+npm run test:assignment
+```
+
+The latest completed CI run before the latest enhancement commit passed compilation and all assignment tests.
 
 ## License
 
