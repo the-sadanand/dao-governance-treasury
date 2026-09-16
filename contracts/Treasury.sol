@@ -8,6 +8,7 @@ import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/U
 contract Treasury is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     event FundsTransferred(address indexed to, uint256 amount);
 
+    /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
     }
