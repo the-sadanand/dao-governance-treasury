@@ -11,11 +11,7 @@ async function deploySystem() {
   const [deployer, voter, recipient] = await ethers.getSigners();
 
   const Token = await ethers.getContractFactory("GovernanceToken");
-  const token = await upgrades.deployProxy(
-    Token,
-    [deployer.address, ethers.parseEther("1000000")],
-    { kind: "uups" }
-  );
+  const token = await Token.deploy(ethers.parseEther("1000000"));
   await token.waitForDeployment();
 
   await (await token.transfer(voter.address, ethers.parseEther("100000"))).wait();
