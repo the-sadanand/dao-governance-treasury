@@ -1,32 +1,43 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 
 contract Treasury is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     event FundsTransferred(address indexed to, uint256 amount);
 
-    /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
     }
 
-    function initialize(address initialOwner) public initializer {
+    function initialize(address initialOwner) external initializer {
+        require(initialOwner != address(0), "Treasury: zero owner");
         __Ownable_init(initialOwner);
     }
 
     receive() external payable {}
 
-    function transferFunds(address payable to, uint256 amount) external onlyOwner {
-        require(address(this).balance >= amount, "Treasury: Insufficient funds");
-        (bool success, ) = to.call{value: amount}("");
-        require(success, "Treasury: transfer failed");
-        emit FundsTransferred(to, amount);
+    function transferETH(address payable recipient, uint256 amount) external onlyOwner {
+        require(recipient != address(0), "Treasury: zero recipient");
+        require(amount <= address(this).balance, "Treasury: insufficient funds");
+        (bool ok, ) = recipient.call{value: amount}("");
+        require(ok, "Treasury: transfer failed");
+        emit FundsTransferred(recipient, amount);
     }
 
-    function _authorizeUpgrade(
-        address newImplementation
-    ) internal override onlyOwner {}
+    function balance() external view returns (uint256) {
+        return address(this).balance;
+    }
+
+    function version() external pure virtual returns (uint256) {
+        return 1;
+    }
+
+    function _authorizeUpgrade(address newImplementation)
+        internal
+        override
+        onlyOwner
+    {}
 }
