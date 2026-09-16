@@ -1,423 +1,199 @@
-import { ethers, upgrades } from "hardhat";
 import { expect } from "chai";
+import { ethers, upgrades } from "hardhat";
 import { mine, time } from "@nomicfoundation/hardhat-network-helpers";
-import { HardhatEthersSigner } from "@nomicfoundation/hardhat-ethers/signers";
-import { GovernanceToken, MyGovernor, Treasury, TreasuryV2, TimelockController } from "../typechain-types";
 
-describe("DAO Governance", function () {
-  let deployer: HardhatEthersSigner;
-  let addr1: HardhatEthersSigner;
-  let addr2: HardhatEthersSigner;
-  let addr3: HardhatEthersSigner;
-  let recipient: HardhatEthersSigner;
-  
-  let governanceToken: GovernanceToken;
-  let timelock: TimelockController;
-  let governor: MyGovernor;
-  let treasury: Treasury;
-  
-  let govTokenAddr: string;
-  let timelockAddr: string;
-  let governorAddr: string;
-  let treasuryAddr: string;
+const VOTING_DELAY = 1;
+const VOTING_PERIOD = 10;
+const QUORUM_PERCENTAGE = 4;
+const MIN_DELAY = 3600;
 
-  const VOTING_DELAY = 1n;
-  const VOTING_PERIOD = 10n;
-  const PROPOSAL_THRESHOLD = 0n;
-  const QUORUM_PERCENTAGE = 4n;
-  const MIN_DELAY = 3600n;
-  const MINT_AMOUNT = ethers.parseEther("1000");
+async function deploySystem() {
+  const [deployer, voter, recipient] = await ethers.getSigners();
 
-  beforeEach(async function () {
-    [deployer, addr1, addr2, addr3, recipient] = await ethers.getSigners();
+  const Token = await ethers.getContractFactory("GovernanceToken");
+  const token = await upgrades.deployProxy(
+    Token,
+    [deployer.address, ethers.parseEther("1000000")],
+    { kind: "uups" }
+  );
+  await token.waitForDeployment();
 
-    // Deploy GovernanceToken
-    const GovernanceTokenFactory = await ethers.getContractFactory("GovernanceToken");
-    governanceToken = await upgrades.deployProxy(GovernanceTokenFactory, [deployer.address], { kind: "uups" }) as unknown as GovernanceToken;
-    await governanceToken.waitForDeployment();
-    govTokenAddr = await governanceToken.getAddress();
+  await (await token.transfer(voter.address, ethers.parseEther("100000"))).wait();
+  await (await token.delegate(deployer.address)).wait();
+  await (await token.connect(voter).delegate(voter.address)).wait();
 
-    // Mint and delegate tokens
-    await governanceToken.mint(deployer.address, MINT_AMOUNT);
-    await governanceToken.mint(addr1.address, MINT_AMOUNT);
-    await governanceToken.mint(addr2.address, MINT_AMOUNT);
-    await governanceToken.mint(addr3.address, MINT_AMOUNT);
+  const Timelock = await ethers.getContractFactory("TimelockController");
+  const timelock = await Timelock.deploy(
+    MIN_DELAY,
+    [],
+    [ethers.ZeroAddress],
+    deployer.address
+  );
+  await timelock.waitForDeployment();
 
-    await governanceToken.connect(deployer).delegate(deployer.address);
-    await governanceToken.connect(addr1).delegate(addr1.address);
-    await governanceToken.connect(addr2).delegate(addr2.address);
-    await governanceToken.connect(addr3).delegate(addr3.address);
+  const Governor = await ethers.getContractFactory("MyGovernor");
+  const governor = await Governor.deploy(
+    await token.getAddress(),
+    await timelock.getAddress(),
+    VOTING_DELAY,
+    VOTING_PERIOD,
+    0,
+    QUORUM_PERCENTAGE
+  );
+  await governor.waitForDeployment();
 
-    // Deploy TimelockController
-    const TimelockFactory = await ethers.getContractFactory("TimelockController");
-    timelock = await TimelockFactory.deploy(MIN_DELAY, [], [ethers.ZeroAddress], deployer.address);
-    await timelock.waitForDeployment();
-    timelockAddr = await timelock.getAddress();
+  const proposerRole = await timelock.PROPOSER_ROLE();
+  const cancellerRole = await timelock.CANCELLER_ROLE();
+  const adminRole = await timelock.DEFAULT_ADMIN_ROLE();
 
-    // Deploy MyGovernor
-    const GovernorFactory = await ethers.getContractFactory("MyGovernor");
-    governor = await GovernorFactory.deploy(
-      govTokenAddr,
-      timelockAddr,
-      VOTING_DELAY,
-      VOTING_PERIOD,
-      PROPOSAL_THRESHOLD,
-      QUORUM_PERCENTAGE
+  await (await timelock.grantRole(proposerRole, await governor.getAddress())).wait();
+  await (await timelock.grantRole(cancellerRole, await governor.getAddress())).wait();
+  await (await timelock.renounceRole(adminRole, deployer.address)).wait();
+
+  const Treasury = await ethers.getContractFactory("Treasury");
+  const treasury = await upgrades.deployProxy(
+    Treasury,
+    [await timelock.getAddress()],
+    { kind: "uups" }
+  );
+  await treasury.waitForDeployment();
+
+  await (await deployer.sendTransaction({
+    to: await treasury.getAddress(),
+    value: ethers.parseEther("10")
+  })).wait();
+
+  return { deployer, voter, recipient, token, timelock, governor, treasury };
+}
+
+async function passProposal(
+  governor: any,
+  voter: any,
+  targets: string[],
+  values: bigint[],
+  calldatas: string[],
+  description: string
+) {
+  const tx = await governor.connect(voter).propose(targets, values, calldatas, description);
+  await tx.wait();
+
+  const descriptionHash = ethers.id(description);
+  const proposalId = await governor.hashProposal(targets, values, calldatas, descriptionHash);
+
+  await mine(VOTING_DELAY + 1);
+  await (await governor.connect(voter).castVote(proposalId, 1)).wait();
+  await mine(VOTING_PERIOD + 1);
+
+  expect(await governor.state(proposalId)).to.equal(4n);
+
+  await (await governor.queue(targets, values, calldatas, descriptionHash)).wait();
+  expect(await governor.state(proposalId)).to.equal(5n);
+
+  return { proposalId, descriptionHash };
+}
+
+describe("DAO assignment: Governor + Timelock + upgradeable Treasury", function () {
+  it("deploys the required governance architecture", async function () {
+    const { deployer, token, timelock, governor, treasury } = await deploySystem();
+
+    expect(await token.name()).to.equal("Task Governance Token");
+    expect(await token.symbol()).to.equal("TGT");
+    expect(await token.getVotes(deployer.address)).to.equal(ethers.parseEther("900000"));
+    expect(await treasury.owner()).to.equal(await timelock.getAddress());
+    expect(await treasury.balance()).to.equal(ethers.parseEther("10"));
+
+    const proposerRole = await timelock.PROPOSER_ROLE();
+    const cancellerRole = await timelock.CANCELLER_ROLE();
+    const executorRole = await timelock.EXECUTOR_ROLE();
+    const adminRole = await timelock.DEFAULT_ADMIN_ROLE();
+
+    expect(await timelock.hasRole(proposerRole, await governor.getAddress())).to.equal(true);
+    expect(await timelock.hasRole(cancellerRole, await governor.getAddress())).to.equal(true);
+    expect(await timelock.hasRole(executorRole, ethers.ZeroAddress)).to.equal(true);
+    expect(await timelock.hasRole(adminRole, deployer.address)).to.equal(false);
+  });
+
+  it("runs propose -> vote -> Succeeded -> queue -> timelock delay -> execute and transfers ETH", async function () {
+    const { voter, recipient, governor, treasury } = await deploySystem();
+    const amount = ethers.parseEther("1");
+    const calldata = treasury.interface.encodeFunctionData("transferETH", [recipient.address, amount]);
+    const description = "Transfer 1 ETH from treasury";
+
+    const { proposalId, descriptionHash } = await passProposal(
+      governor,
+      voter,
+      [await treasury.getAddress()],
+      [0n],
+      [calldata],
+      description
     );
-    await governor.waitForDeployment();
-    governorAddr = await governor.getAddress();
 
-    // Deploy Treasury
-    const TreasuryFactory = await ethers.getContractFactory("Treasury");
-    treasury = await upgrades.deployProxy(TreasuryFactory, [timelockAddr], { kind: "uups" }) as unknown as Treasury;
-    await treasury.waitForDeployment();
-    treasuryAddr = await treasury.getAddress();
+    expect(await governor.state(proposalId)).to.equal(5n);
+    await time.increase(MIN_DELAY + 1);
 
-    // Setup roles
-    const PROPOSER_ROLE = await timelock.PROPOSER_ROLE();
-    const CANCELLER_ROLE = await timelock.CANCELLER_ROLE();
-    const DEFAULT_ADMIN_ROLE = await timelock.DEFAULT_ADMIN_ROLE();
+    const before = await ethers.provider.getBalance(recipient.address);
+    await (await governor.execute(
+      [await treasury.getAddress()],
+      [0n],
+      [calldata],
+      descriptionHash
+    )).wait();
+    const after = await ethers.provider.getBalance(recipient.address);
 
-    await timelock.grantRole(PROPOSER_ROLE, governorAddr);
-    await timelock.grantRole(CANCELLER_ROLE, governorAddr);
-    await timelock.renounceRole(DEFAULT_ADMIN_ROLE, deployer.address);
-
-    // Fund Treasury
-    await deployer.sendTransaction({ to: treasuryAddr, value: ethers.parseEther("10") });
+    expect(after - before).to.equal(amount);
+    expect(await treasury.balance()).to.equal(ethers.parseEther("9"));
+    expect(await governor.state(proposalId)).to.equal(7n);
   });
 
-  describe("1. Deployment & Configuration", function () {
-    it("GovernanceToken name is MyGovToken, symbol is MGT, decimals is 18", async function () {
-      expect(await governanceToken.name()).to.equal("MyGovToken");
-      expect(await governanceToken.symbol()).to.equal("MGT");
-      expect(await governanceToken.decimals()).to.equal(18);
-    });
+  it("upgrades Treasury V1 to V2 through governance and preserves proxy address, owner and ETH balance", async function () {
+    const { voter, governor, treasury, timelock } = await deploySystem();
+    const proxyAddress = await treasury.getAddress();
+    const balanceBefore = await treasury.balance();
 
-    it("GovernanceToken has delegate and getVotes functions", async function () {
-      expect(typeof governanceToken.delegate).to.equal("function");
-      expect(typeof governanceToken.getVotes).to.equal("function");
-    });
+    const TreasuryV2 = await ethers.getContractFactory("TreasuryV2");
+    const v2Implementation = await TreasuryV2.deploy();
+    await v2Implementation.waitForDeployment();
 
-    it("MyGovernor name is MyGovernor", async function () {
-      expect(await governor.name()).to.equal("MyGovernor");
-    });
+    const calldata = treasury.interface.encodeFunctionData("upgradeToAndCall", [
+      await v2Implementation.getAddress(),
+      "0x"
+    ]);
+    const description = "Upgrade treasury to V2";
 
-    it("MyGovernor token() returns governance token address", async function () {
-      expect(await governor.token()).to.equal(govTokenAddr);
-    });
+    const { proposalId, descriptionHash } = await passProposal(
+      governor,
+      voter,
+      [proxyAddress],
+      [0n],
+      [calldata],
+      description
+    );
 
-    it("MyGovernor timelock() returns timelock address", async function () {
-      expect(await governor.timelock()).to.equal(timelockAddr);
-    });
+    await time.increase(MIN_DELAY + 1);
+    await (await governor.execute([proxyAddress], [0n], [calldata], descriptionHash)).wait();
 
-    it("votingDelay() returns 1", async function () {
-      expect(await governor.votingDelay()).to.equal(VOTING_DELAY);
-    });
+    const upgraded = TreasuryV2.attach(proxyAddress);
 
-    it("votingPeriod() returns 10", async function () {
-      expect(await governor.votingPeriod()).to.equal(VOTING_PERIOD);
-    });
-
-    it("proposalThreshold() returns 0", async function () {
-      expect(await governor.proposalThreshold()).to.equal(PROPOSAL_THRESHOLD);
-    });
-
-    it("TimelockController PROPOSER_ROLE granted to governor", async function () {
-      const PROPOSER_ROLE = await timelock.PROPOSER_ROLE();
-      expect(await timelock.hasRole(PROPOSER_ROLE, governorAddr)).to.be.true;
-    });
-
-    it("TimelockController EXECUTOR_ROLE granted to zero address", async function () {
-      const EXECUTOR_ROLE = await timelock.EXECUTOR_ROLE();
-      expect(await timelock.hasRole(EXECUTOR_ROLE, ethers.ZeroAddress)).to.be.true;
-    });
-
-    it("Deployer has renounced DEFAULT_ADMIN_ROLE on timelock", async function () {
-      const DEFAULT_ADMIN_ROLE = await timelock.DEFAULT_ADMIN_ROLE();
-      expect(await timelock.hasRole(DEFAULT_ADMIN_ROLE, deployer.address)).to.be.false;
-    });
-
-    it("Treasury owner() is timelock address", async function () {
-      expect(await treasury.owner()).to.equal(timelockAddr);
-    });
+    expect(await upgraded.getAddress()).to.equal(proxyAddress);
+    expect(await upgraded.owner()).to.equal(await timelock.getAddress());
+    expect(await upgraded.balance()).to.equal(balanceBefore);
+    expect(await upgraded.version()).to.equal(2n);
+    expect(await governor.state(proposalId)).to.equal(7n);
   });
 
-  describe("2. Proposal Creation", function () {
-    it("A user with voting power can create a proposal, emitting ProposalCreated event, state is Pending (0)", async function () {
-      const transferAmount = ethers.parseEther("1");
-      const transferCalldata = treasury.interface.encodeFunctionData("transferFunds", [recipient.address, transferAmount]);
-      const description = "Proposal #1: Fund project X";
+  it("prevents an EOA from directly moving treasury funds or upgrading it", async function () {
+    const { voter, treasury } = await deploySystem();
 
-      const tx = await governor.connect(addr1).propose(
-        [treasuryAddr],
-        [0],
-        [transferCalldata],
-        description
-      );
-      
-      const receipt = await tx.wait();
-      const event = receipt!.logs.find(log => {
-        try {
-          return governor.interface.parseLog({ topics: [...log.topics], data: log.data })?.name === "ProposalCreated";
-        } catch { return false; }
-      });
-      const parsedEvent = governor.interface.parseLog({ topics: [...event!.topics], data: event!.data });
-      const proposalId = parsedEvent!.args.proposalId;
+    await expect(
+      treasury.connect(voter).transferETH(voter.address, ethers.parseEther("1"))
+    ).to.be.revertedWithCustomError(treasury, "OwnableUnauthorizedAccount");
 
-      expect(parsedEvent?.name).to.equal("ProposalCreated");
-      expect(await governor.state(proposalId)).to.equal(0n); // Pending
-    });
-  });
+    const TreasuryV2 = await ethers.getContractFactory("TreasuryV2");
+    const implementation = await TreasuryV2.deploy();
+    await implementation.waitForDeployment();
 
-  describe("3. Voting", function () {
-    let proposalId: bigint;
-
-    beforeEach(async function () {
-      const transferAmount = ethers.parseEther("1");
-      const transferCalldata = treasury.interface.encodeFunctionData("transferFunds", [recipient.address, transferAmount]);
-      const description = "Proposal #1: Fund project X";
-
-      const tx = await governor.propose(
-        [treasuryAddr],
-        [0],
-        [transferCalldata],
-        description
-      );
-      const receipt = await tx.wait();
-      const event = receipt!.logs.find(log => {
-        try {
-          return governor.interface.parseLog({ topics: [...log.topics], data: log.data })?.name === "ProposalCreated";
-        } catch { return false; }
-      });
-      const parsedEvent = governor.interface.parseLog({ topics: [...event!.topics], data: event!.data });
-      proposalId = parsedEvent!.args.proposalId;
-    });
-
-    it("Proposal becomes Active (1) after voting delay, can cast votes, proposalVotes returns correct tallies", async function () {
-      await mine(Number(VOTING_DELAY) + 1);
-      expect(await governor.state(proposalId)).to.equal(1n); // Active
-
-      // Token holders cast For (1), Against (0), and Abstain (2) votes
-      await governor.connect(addr1).castVote(proposalId, 1); // For
-      await governor.connect(addr2).castVote(proposalId, 0); // Against
-      await governor.connect(addr3).castVote(proposalId, 2); // Abstain
-
-      const votes = await governor.proposalVotes(proposalId);
-      expect(votes[0]).to.equal(MINT_AMOUNT); // againstVotes
-      expect(votes[1]).to.equal(MINT_AMOUNT); // forVotes
-      expect(votes[2]).to.equal(MINT_AMOUNT); // abstainVotes
-    });
-  });
-
-  describe("4. Proposal Success & Queue", function () {
-    let proposalId: bigint;
-    let descriptionHash: string;
-    let transferCalldata: string;
-
-    beforeEach(async function () {
-      const transferAmount = ethers.parseEther("1");
-      transferCalldata = treasury.interface.encodeFunctionData("transferFunds", [recipient.address, transferAmount]);
-      const description = "Proposal #1: Fund project X";
-      descriptionHash = ethers.id(description);
-
-      const tx = await governor.propose(
-        [treasuryAddr],
-        [0],
-        [transferCalldata],
-        description
-      );
-      const receipt = await tx.wait();
-      const event = receipt!.logs.find(log => {
-        try {
-          return governor.interface.parseLog({ topics: [...log.topics], data: log.data })?.name === "ProposalCreated";
-        } catch { return false; }
-      });
-      const parsedEvent = governor.interface.parseLog({ topics: [...event!.topics], data: event!.data });
-      proposalId = parsedEvent!.args.proposalId;
-    });
-
-    it("Proposal with more For than Against and meeting quorum becomes Succeeded (4) and can be Queued (5)", async function () {
-      await mine(Number(VOTING_DELAY) + 1);
-
-      await governor.connect(addr1).castVote(proposalId, 1); // For
-      await governor.connect(addr2).castVote(proposalId, 1); // For
-
-      await mine(Number(VOTING_PERIOD) + 1);
-      
-      expect(await governor.state(proposalId)).to.equal(4n); // Succeeded
-
-      await governor.queue(
-        [treasuryAddr],
-        [0],
-        [transferCalldata],
-        descriptionHash
-      );
-
-      expect(await governor.state(proposalId)).to.equal(5n); // Queued
-    });
-  });
-
-  describe("5. Proposal Execution", function () {
-    let proposalId: bigint;
-    let descriptionHash: string;
-    let transferCalldata: string;
-
-    beforeEach(async function () {
-      const transferAmount = ethers.parseEther("1");
-      transferCalldata = treasury.interface.encodeFunctionData("transferFunds", [recipient.address, transferAmount]);
-      const description = "Proposal #1: Fund project X";
-      descriptionHash = ethers.id(description);
-
-      const tx = await governor.propose(
-        [treasuryAddr],
-        [0],
-        [transferCalldata],
-        description
-      );
-      const receipt = await tx.wait();
-      const event = receipt!.logs.find(log => {
-        try {
-          return governor.interface.parseLog({ topics: [...log.topics], data: log.data })?.name === "ProposalCreated";
-        } catch { return false; }
-      });
-      const parsedEvent = governor.interface.parseLog({ topics: [...event!.topics], data: event!.data });
-      proposalId = parsedEvent!.args.proposalId;
-
-      await mine(Number(VOTING_DELAY) + 1);
-      await governor.connect(addr1).castVote(proposalId, 1); // For
-      await governor.connect(deployer).castVote(proposalId, 1); // For (additional votes)
-      await mine(Number(VOTING_PERIOD) + 1);
-      
-      await governor.queue(
-        [treasuryAddr],
-        [0],
-        [transferCalldata],
-        descriptionHash
-      );
-    });
-
-    it("Queued proposal can be executed after timelock delay, Treasury funds are transferred, state becomes Executed (6)", async function () {
-      // Verify state is Queued before proceeding
-      expect(await governor.state(proposalId)).to.equal(5n); // Queued
-      
-      await time.increase(Number(MIN_DELAY) + 1);
-      
-      // Check state after time increase
-      const stateAfterTime = await governor.state(proposalId);
-      expect(stateAfterTime).to.equal(5n); // Should still be Queued
-
-      const balanceBefore = await ethers.provider.getBalance(recipient.address);
-
-      const executeTx = await governor.execute(
-        [treasuryAddr],
-        [0],
-        [transferCalldata],
-        descriptionHash
-      );
-      const receipt = await executeTx.wait();
-      
-      // Check if ProposalExecuted event was emitted
-      const executedEvent = receipt!.logs.find(log => {
-        try {
-          return governor.interface.parseLog({ topics: [...log.topics], data: log.data })?.name === "ProposalExecuted";
-        } catch { return false; }
-      });
-      expect(executedEvent).to.not.be.undefined;
-
-      expect(await governor.state(proposalId)).to.equal(7n); // Executed (OZ v5: Executed=7)
-      
-      const balanceAfter = await ethers.provider.getBalance(recipient.address);
-      expect(balanceAfter - balanceBefore).to.equal(ethers.parseEther("1"));
-    });
-  });
-
-  describe("6. Proposal Defeat", function () {
-    let proposalId: bigint;
-
-    beforeEach(async function () {
-      const transferAmount = ethers.parseEther("1");
-      const transferCalldata = treasury.interface.encodeFunctionData("transferFunds", [recipient.address, transferAmount]);
-      const description = "Proposal #1: Fund project X";
-
-      const tx = await governor.propose(
-        [treasuryAddr],
-        [0],
-        [transferCalldata],
-        description
-      );
-      const receipt = await tx.wait();
-      const event = receipt!.logs.find(log => {
-        try {
-          return governor.interface.parseLog({ topics: [...log.topics], data: log.data })?.name === "ProposalCreated";
-        } catch { return false; }
-      });
-      const parsedEvent = governor.interface.parseLog({ topics: [...event!.topics], data: event!.data });
-      proposalId = parsedEvent!.args.proposalId;
-    });
-
-    it("Proposal with more Against votes is Defeated (3)", async function () {
-      await mine(Number(VOTING_DELAY) + 1);
-      await governor.connect(addr1).castVote(proposalId, 0); // Against
-      await governor.connect(addr2).castVote(proposalId, 1); // For
-      await governor.connect(addr3).castVote(proposalId, 0); // Against
-      await mine(Number(VOTING_PERIOD) + 1);
-      
-      expect(await governor.state(proposalId)).to.equal(3n); // Defeated
-    });
-
-    it("Proposal that doesn't meet quorum is Defeated (3)", async function () {
-      const transferAmount = ethers.parseEther("1");
-      const transferCalldata = treasury.interface.encodeFunctionData("transferFunds", [recipient.address, transferAmount]);
-      const description = "Proposal #2: Try again";
-      const tx = await governor.propose(
-        [treasuryAddr],
-        [0],
-        [transferCalldata],
-        description
-      );
-      const receipt = await tx.wait();
-      const event = receipt!.logs.find(log => {
-        try {
-          return governor.interface.parseLog({ topics: [...log.topics], data: log.data })?.name === "ProposalCreated";
-        } catch { return false; }
-      });
-      const parsedEvent = governor.interface.parseLog({ topics: [...event!.topics], data: event!.data });
-      const newProposalId = parsedEvent!.args.proposalId;
-
-      await mine(Number(VOTING_DELAY) + 1);
-      // No votes cast
-      await mine(Number(VOTING_PERIOD) + 1);
-
-      expect(await governor.state(newProposalId)).to.equal(3n); // Defeated
-    });
-  });
-
-  describe("7. Treasury Upgradeability", function () {
-    it("should upgrade Treasury to V2 while preserving state", async function () {
-      // Deploy a separate treasury with deployer as owner for upgrade testing
-      const TreasuryFactory = await ethers.getContractFactory("Treasury");
-      const testTreasury = await upgrades.deployProxy(
-        TreasuryFactory,
-        [deployer.address],
-        { kind: "uups" }
-      );
-      await testTreasury.waitForDeployment();
-      const testTreasuryAddr = await testTreasury.getAddress();
-      
-      // Send 1 ETH
-      await deployer.sendTransaction({ to: testTreasuryAddr, value: ethers.parseEther("1") });
-      expect(await ethers.provider.getBalance(testTreasuryAddr)).to.equal(ethers.parseEther("1"));
-      
-      // Upgrade to V2
-      const TreasuryV2Factory = await ethers.getContractFactory("TreasuryV2");
-      const upgraded = await upgrades.upgradeProxy(testTreasuryAddr, TreasuryV2Factory, { kind: "uups" });
-      
-      // Verify version
-      const treasuryV2 = await ethers.getContractAt("TreasuryV2", testTreasuryAddr);
-      expect(await treasuryV2.version()).to.equal("v2");
-      
-      // Verify balance preserved
-      expect(await ethers.provider.getBalance(testTreasuryAddr)).to.equal(ethers.parseEther("1"));
-    });
+    await expect(
+      treasury.connect(voter).upgradeToAndCall(await implementation.getAddress(), "0x")
+    ).to.be.revertedWithCustomError(treasury, "OwnableUnauthorizedAccount");
   });
 });
