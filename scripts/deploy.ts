@@ -1,122 +1,71 @@
 import { ethers, upgrades } from "hardhat";
-import { TimelockController } from "../typechain-types";
 
 async function main() {
-  const [deployer, addr1, addr2, addr3] = await ethers.getSigners();
-  console.log("Deploying contracts with the account:", deployer.address);
+  const [deployer, voter] = await ethers.getSigners();
+  const INITIAL_SUPPLY = ethers.parseEther("1000000");
+  const VOTING_DELAY = 1;
+  const VOTING_PERIOD = 10;
+  const PROPOSAL_THRESHOLD = 0;
+  const QUORUM_PERCENTAGE = 4;
+  const MIN_DELAY = 3600;
 
-  // ========== 1. Deploy Governance Token (Upgradeable - UUPS) ==========
-  console.log("\n--- Deploying GovernanceToken ---");
-  const GovernanceToken = await ethers.getContractFactory("GovernanceToken");
-  const governanceToken = await upgrades.deployProxy(
-    GovernanceToken,
-    [deployer.address],
-    { kind: "uups" }
-  );
-  await governanceToken.waitForDeployment();
-  const govTokenAddress = await governanceToken.getAddress();
-  console.log("GovernanceToken deployed to:", govTokenAddress);
+  console.log(`Deployer: ${deployer.address}`);
+  console.log(`Voter:    ${voter.address}`);
 
-  // ========== 2. Mint tokens and delegate ==========
-  console.log("\n--- Minting tokens and delegating ---");
-  const mintAmount = ethers.parseEther("1000");
+  const Token = await ethers.getContractFactory("GovernanceToken");
+  const token = await Token.deploy(INITIAL_SUPPLY);
+  await token.waitForDeployment();
+  await (await token.transfer(voter.address, ethers.parseEther("100000"))).wait();
+  await (await token.delegate(deployer.address)).wait();
+  await (await token.connect(voter).delegate(voter.address)).wait();
 
-  // Mint to deployer and test accounts
-  await governanceToken.mint(deployer.address, mintAmount);
-  await governanceToken.mint(addr1.address, mintAmount);
-  await governanceToken.mint(addr2.address, mintAmount);
-  await governanceToken.mint(addr3.address, ethers.parseEther("500"));
-
-  // Delegate voting power to self for each account
-  await governanceToken.connect(deployer).delegate(deployer.address);
-  await governanceToken.connect(addr1).delegate(addr1.address);
-  await governanceToken.connect(addr2).delegate(addr2.address);
-  await governanceToken.connect(addr3).delegate(addr3.address);
-
-  console.log("Tokens minted and delegated.");
-
-  // ========== 3. Deploy TimelockController ==========
-  console.log("\n--- Deploying TimelockController ---");
-  const MIN_DELAY = 3600; // 1 hour in seconds
-
-  // Initially set deployer as proposer/executor, will update roles after Governor deployment
-  const TimelockFactory = await ethers.getContractFactory("TimelockController", {
-    libraries: {},
-  });
-
-  // Deploy with: minDelay, proposers (empty initially), executors (zero address = anyone), admin (deployer)
-  const timelock = await TimelockFactory.deploy(
+  const Timelock = await ethers.getContractFactory("TimelockController");
+  const timelock = await Timelock.deploy(
     MIN_DELAY,
-    [], // proposers - will add governor later
-    [ethers.ZeroAddress], // executors - anyone can execute
-    deployer.address // admin - will renounce later
-  ) as unknown as TimelockController;
+    [],
+    [ethers.ZeroAddress],
+    deployer.address
+  );
   await timelock.waitForDeployment();
-  const timelockAddress = await timelock.getAddress();
-  console.log("TimelockController deployed to:", timelockAddress);
 
-  // ========== 4. Deploy Governor ==========
-  console.log("\n--- Deploying MyGovernor ---");
-  const MyGovernor = await ethers.getContractFactory("MyGovernor");
-  const VOTING_DELAY = 1; // 1 block
-  const VOTING_PERIOD = 10; // 10 blocks
-  const PROPOSAL_THRESHOLD = 0; // 0 tokens needed to propose
-  const QUORUM_PERCENTAGE = 4; // 4% quorum
-
-  const governor = await MyGovernor.deploy(
-    govTokenAddress,
-    timelockAddress,
+  const Governor = await ethers.getContractFactory("MyGovernor");
+  const governor = await Governor.deploy(
+    await token.getAddress(),
+    await timelock.getAddress(),
     VOTING_DELAY,
     VOTING_PERIOD,
     PROPOSAL_THRESHOLD,
     QUORUM_PERCENTAGE
   );
   await governor.waitForDeployment();
-  const governorAddress = await governor.getAddress();
-  console.log("MyGovernor deployed to:", governorAddress);
 
-  // ========== 5. Deploy Treasury (Upgradeable - UUPS) ==========
-  console.log("\n--- Deploying Treasury ---");
+  const proposerRole = await timelock.PROPOSER_ROLE();
+  const cancellerRole = await timelock.CANCELLER_ROLE();
+  const adminRole = await timelock.DEFAULT_ADMIN_ROLE();
+  await (await timelock.grantRole(proposerRole, await governor.getAddress())).wait();
+  await (await timelock.grantRole(cancellerRole, await governor.getAddress())).wait();
+  await (await timelock.renounceRole(adminRole, deployer.address)).wait();
+
   const Treasury = await ethers.getContractFactory("Treasury");
   const treasury = await upgrades.deployProxy(
     Treasury,
-    [timelockAddress], // Owner is the Timelock
+    [await timelock.getAddress()],
     { kind: "uups" }
   );
   await treasury.waitForDeployment();
-  const treasuryAddress = await treasury.getAddress();
-  console.log("Treasury deployed to:", treasuryAddress);
 
-  // ========== 6. Configure Timelock Roles ==========
-  console.log("\n--- Configuring Timelock Roles ---");
+  await (await deployer.sendTransaction({
+    to: await treasury.getAddress(),
+    value: ethers.parseEther("10")
+  })).wait();
 
-  // Grant PROPOSER_ROLE to the Governor
-  const PROPOSER_ROLE = await timelock.PROPOSER_ROLE();
-  await timelock.grantRole(PROPOSER_ROLE, governorAddress);
-  console.log("Granted PROPOSER_ROLE to Governor");
-
-  // Grant CANCELLER_ROLE to the Governor
-  const CANCELLER_ROLE = await timelock.CANCELLER_ROLE();
-  await timelock.grantRole(CANCELLER_ROLE, governorAddress);
-  console.log("Granted CANCELLER_ROLE to Governor");
-
-  // Renounce TIMELOCK_ADMIN_ROLE from deployer
-  const TIMELOCK_ADMIN_ROLE = await timelock.DEFAULT_ADMIN_ROLE();
-  await timelock.renounceRole(TIMELOCK_ADMIN_ROLE, deployer.address);
-  console.log("Deployer renounced TIMELOCK_ADMIN_ROLE");
-
-  // ========== 7. Summary ==========
-  console.log("\n========== Deployment Summary ==========");
-  console.log("GovernanceToken:", govTokenAddress);
-  console.log("TimelockController:", timelockAddress);
-  console.log("MyGovernor:", governorAddress);
-  console.log("Treasury:", treasuryAddress);
-  console.log("Voting Delay:", VOTING_DELAY, "block(s)");
-  console.log("Voting Period:", VOTING_PERIOD, "block(s)");
-  console.log("Proposal Threshold:", PROPOSAL_THRESHOLD);
-  console.log("Quorum Percentage:", QUORUM_PERCENTAGE, "%");
-  console.log("Timelock Min Delay:", MIN_DELAY, "seconds");
-  console.log("========================================");
+  console.log("\nDeployment complete:");
+  console.log(`GovernanceToken:    ${await token.getAddress()}`);
+  console.log(`MyGovernor:        ${await governor.getAddress()}`);
+  console.log(`TimelockController:${await timelock.getAddress()}`);
+  console.log(`Treasury proxy:    ${await treasury.getAddress()}`);
+  console.log(`Treasury owner:    ${await treasury.owner()}`);
+  console.log(`Treasury balance:  ${ethers.formatEther(await treasury.balance())} ETH`);
 }
 
 main().catch((error) => {
