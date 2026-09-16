@@ -1,163 +1,139 @@
-# DAO with On-Chain Governance and Treasury Management
+# DAO Governance Treasury
 
-A fully functional Decentralized Autonomous Organization (DAO) with on-chain governance built using Solidity, Hardhat, and OpenZeppelin contracts.
+A focused implementation of an on-chain DAO governance system using OpenZeppelin Governor, ERC20Votes, TimelockController, and a UUPS upgradeable ETH Treasury.
 
 ## Architecture
 
-The DAO consists of four main smart contracts:
-
-```
-┌─────────────────────┐     ┌──────────────────────┐
-│  GovernanceToken    │     │     MyGovernor        │
-│  (ERC20Votes)       │◄────│  (Governor + Settings │
-│  - Voting power     │     │   + Counting + Votes  │
-│  - Delegation       │     │   + Quorum + Timelock)│
-└─────────────────────┘     └──────────┬───────────┘
-                                       │ proposes to
-                            ┌──────────▼───────────┐
-                            │ TimelockController    │
-                            │ - Enforces delay      │
-                            │ - Executes proposals  │
-                            │ - Owns Treasury       │
-                            └──────────┬───────────┘
-                                       │ controls
-                            ┌──────────▼───────────┐
-                            │     Treasury          │
-                            │  - Holds DAO funds    │
-                            │  - Upgradeable (UUPS) │
-                            │  - onlyOwner access   │
-                            └──────────────────────┘
+```text
+GovernanceToken (ERC20Votes)
+          |
+          v
+     MyGovernor
+          |
+          v
+ TimelockController
+          |
+          v
+ Treasury Proxy (UUPS)
+          |
+          v
+     Treasury V1
+          |
+   governance-approved
+          v
+     Treasury V2
 ```
 
-### Components
+OpenZeppelin's `GovernorTimelockControl` routes successful proposals through the `TimelockController`; the timelock therefore owns the Treasury and is the account allowed to execute Treasury operations. citehttps://docs.openzeppelin.com/contracts/5.x/api/governance
 
-1. **GovernanceToken (ERC20Votes)**: An ERC-20 token with voting capabilities. Token holders can delegate their voting power to themselves or others.
+## Assignment requirements covered
 
-2. **MyGovernor**: The core governance contract built on OpenZeppelin's Governor framework. Handles proposal creation, voting, and execution through the timelock.
-   - Voting Delay: 1 block
-   - Voting Period: 10 blocks
-   - Proposal Threshold: 0 tokens
-   - Quorum: 4% of total supply
+- ERC20Votes governance token with delegation.
+- OpenZeppelin Governor.
+- GovernorCountingSimple for For / Against / Abstain votes.
+- GovernorVotes and GovernorVotesQuorumFraction.
+- OpenZeppelin TimelockController with a 1-hour minimum delay.
+- Governor receives `PROPOSER_ROLE` and `CANCELLER_ROLE`.
+- Executor role is open so any account can execute a ready proposal.
+- Deployer renounces Timelock admin privileges after setup.
+- UUPS upgradeable Treasury owned by the Timelock.
+- Governance proposal can transfer ETH from the Treasury.
+- Governance proposal can upgrade Treasury V1 to V2.
+- Upgrade test verifies the proxy address, owner, and ETH balance are preserved and `version() == 2`.
+- Direct EOA Treasury transfer and upgrade attempts are rejected.
+- Docker and GitHub Actions CI included.
 
-3. **TimelockController**: A security layer that enforces a mandatory delay (1 hour) between when a proposal passes and when it can be executed.
+## Proposal lifecycle
 
-4. **Treasury**: An upgradeable contract (UUPS proxy pattern) that holds and manages the DAO's ETH funds. Only the Timelock can authorize fund transfers.
+```text
+propose
+   |
+   v
+Pending -> Active -> Succeeded
+                      |
+                      v
+                    Queued
+                      |
+                 1 hour delay
+                      |
+                      v
+                   Executed
+```
 
-## Prerequisites
+## Project structure
 
-- Node.js >= 18
-- npm >= 9
-- Docker & Docker Compose (for containerized development)
+```text
+contracts/
+  GovernanceToken.sol
+  MyGovernor.sol
+  Treasury.sol
+  TreasuryV2.sol
+scripts/
+  deploy.ts
+test/
+  governance.test.ts
+hardhat.config.ts
+Dockerfile
+docker-compose.yml
+.env.example
+```
 
-## Setup
+## Local setup
 
-### Local Development
+Requirements: Node.js 18+ and npm.
 
 ```bash
-# Clone the repository
-git clone <repository-url>
-cd dao-governance
-
-# Install dependencies
 npm install
-
-# Copy environment file
-cp .env.example .env
-
-# Compile contracts
 npm run compile
-
-# Run tests
 npm test
+```
 
-# Start local Hardhat node
+The assignment-focused suite can be run directly with:
+
+```bash
+npm run test:assignment
+```
+
+## Local deployment
+
+Start a local chain:
+
+```bash
 npm run node
+```
 
-# In a new terminal, deploy contracts
+In another terminal:
+
+```bash
 npm run deploy
 ```
 
-### Docker
+The deployment script prints the GovernanceToken, Governor, TimelockController, Treasury proxy, owner, and Treasury balance.
+
+## Docker
 
 ```bash
-# Start the Hardhat node in a container
-docker-compose up -d
-
-# Wait for the node to be healthy
-docker-compose ps
-
-# Deploy contracts to the containerized node
-npm run deploy
+docker compose build
+docker compose up
 ```
 
-## Testing
+The container starts a local Hardhat JSON-RPC node on port `8545`.
 
-The test suite covers the entire governance lifecycle:
+## Important design decisions
 
-```bash
-npm test
-```
+### Governance token
 
-### Test Coverage
+The token uses OpenZeppelin `ERC20Votes`, so voting power is based on historical checkpoints. Holders must delegate their voting power before it can be used for governance votes. citehttps://docs.openzeppelin.com/contracts/5.x/governance
 
-- **Contract Deployment**: Verifies all contracts are deployed with correct parameters
-- **Token Operations**: Minting, delegation, and voting power
-- **Proposal Creation**: Creating proposals with proper encoding
-- **Voting**: Casting votes (For, Against, Abstain) and vote tallying
-- **Proposal Lifecycle**: Full flow from Pending → Active → Succeeded → Queued → Executed
-- **Proposal Defeat**: Proposals that don't meet quorum or have more Against votes
-- **Treasury Operations**: Fund transfers through governance
-- **Upgradeability**: Upgrading the Treasury contract to V2 while preserving state
-- **Access Control**: Timelock roles and Treasury ownership
+### Timelock
 
-## Proposal Lifecycle
+The TimelockController is the owner of the Treasury. Successful proposals are queued and can only execute after the minimum delay. This follows OpenZeppelin's Governor + TimelockController architecture. citehttps://docs.openzeppelin.com/contracts/5.x/api/governance
 
-1. **Create Proposal**: A token holder calls `propose()` on the Governor
-2. **Voting Delay**: Wait for the voting delay period (1 block)
-3. **Voting Period**: Token holders cast votes (For/Against/Abstain) for 10 blocks
-4. **Succeeded/Defeated**: Proposal passes if quorum is met and For > Against
-5. **Queue**: Passed proposal is queued in the Timelock
-6. **Timelock Delay**: Mandatory 1-hour delay for community review
-7. **Execute**: Anyone can execute the proposal after the delay
+### Treasury upgrade
 
-## Project Structure
+Treasury uses the UUPS pattern and restricts `_authorizeUpgrade` with `onlyOwner`. Since the Timelock owns the proxy, the upgrade must itself be approved by governance and executed through the timelock. OpenZeppelin documents `_authorizeUpgrade` as the required access-control hook for UUPS upgrades. citehttps://docs.openzeppelin.com/contracts/5.x/api/proxy
 
-```
-dao-governance/
-├── contracts/
-│   ├── GovernanceToken.sol    # ERC20 voting token (upgradeable)
-│   ├── Treasury.sol           # DAO treasury (upgradeable, UUPS)
-│   ├── TreasuryV2.sol         # Treasury upgrade with version()
-│   └── MyGovernor.sol         # Governor contract
-├── scripts/
-│   ├── deploy.ts              # Full deployment script
-│   └── upgrade-treasury.ts    # Treasury upgrade script
-├── test/
-│   └── governance.test.ts     # Comprehensive test suite
-├── hardhat.config.ts          # Hardhat configuration
-├── docker-compose.yml         # Docker Compose configuration
-├── Dockerfile                 # Docker build file
-├── .env.example               # Environment variables template
-├── package.json               # Dependencies and scripts
-├── tsconfig.json              # TypeScript configuration
-└── README.md                  # This file
-```
-
-## Environment Variables
-
-| Variable | Description | Default |
-|----------|-------------|--------|
-| `PRIVATE_KEY` | Deployer account private key | Hardhat default account |
-| `RPC_URL` | Ethereum node RPC URL | `http://localhost:8545` |
-| `TREASURY_PROXY_ADDRESS` | Treasury proxy address (for upgrades) | - |
-
-## Security Considerations
-
-- The Timelock is the sole owner of the Treasury, ensuring all fund transfers go through governance
-- The deployer renounces all admin roles after setup for full decentralization
-- The Timelock enforces a 1-hour delay on all executed proposals
-- UUPS proxy pattern allows contract upgrades through governance votes
-- ERC20Votes ensures snapshot-based voting to prevent flash loan attacks
+The OpenZeppelin Upgrades plugin is used for safe local proxy deployment. citehttps://docs.openzeppelin.com/contracts/5.x/upgradeable
 
 ## License
 
